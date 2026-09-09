@@ -305,6 +305,28 @@ describe("session.llm.ai-sdk adapter", () => {
     ])
   })
 
+  test("uses a recognized raw finish reason when the AI SDK reports other", async () => {
+    const events = await adapt([
+      uncheckedAdapterEvent({
+        type: "finish-step",
+        finishReason: "other",
+        rawFinishReason: "stop",
+        usage: {},
+      }),
+      uncheckedAdapterEvent({
+        type: "finish",
+        finishReason: "other",
+        rawFinishReason: "stop",
+        totalUsage: {},
+      }),
+    ])
+
+    expect(events).toMatchObject([
+      { type: "step-finish", reason: "stop" },
+      { type: "finish", reason: "stop" },
+    ])
+  })
+
   test("creates stable block ids when AI SDK omits them", async () => {
     const events = await adapt([
       uncheckedAdapterEvent({ type: "text-delta", text: "implicit text" }),

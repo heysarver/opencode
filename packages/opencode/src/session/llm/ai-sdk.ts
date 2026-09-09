@@ -19,8 +19,13 @@ export function adapterState() {
   }
 }
 
-function finishReason(value: string | undefined): FinishReason {
-  return Schema.is(FinishReason)(value) ? value : "unknown"
+function finishReason(value: string | undefined, raw: string | undefined): FinishReason {
+  if (Schema.is(FinishReason)(value) && value !== "unknown") return value
+  // Some compatible providers preserve a valid wire reason after the AI SDK reports other or unknown.
+  if (Schema.is(FinishReason)(raw) && raw !== "unknown") return raw
+  if (raw === "content_filter") return "content-filter"
+  if (raw === "function_call" || raw === "tool_calls") return "tool-calls"
+  return "unknown"
 }
 
 function providerMetadata(value: unknown): ProviderMetadata | undefined {
@@ -104,7 +109,7 @@ export function toLLMEvents(
         return [
           LLMEvent.stepFinish({
             index: state.step++,
-            reason: finishReason(event.finishReason),
+            reason: finishReason(event.finishReason, event.rawFinishReason),
             usage: usage(event.usage),
             providerMetadata: metadata,
           }),
@@ -115,7 +120,7 @@ export function toLLMEvents(
       return Effect.sync(() => {
         const events = [
           LLMEvent.finish({
-            reason: finishReason(event.finishReason),
+            reason: finishReason(event.finishReason, event.rawFinishReason),
             usage: usage(event.totalUsage),
             providerMetadata: "providerMetadata" in event ? providerMetadata(event.providerMetadata) : undefined,
           }),
