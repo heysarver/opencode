@@ -189,7 +189,7 @@ const layer = Layer.effect(
             }),
           { behavior: "immediate" },
         )
-        .pipe(Effect.orDie)
+        .pipe(Database.retryWhenLocked, Effect.orDie)
     })
 
     const saveProjectDirectory = Effect.fn("Project.saveProjectDirectory")(function* (input: {
@@ -286,7 +286,7 @@ const layer = Layer.effect(
           },
         })
         .run()
-        .pipe(Effect.orDie)
+        .pipe(Database.retryWhenLocked, Effect.orDie)
 
       if (projectID !== ProjectV2.ID.global) {
         yield* db
@@ -294,7 +294,7 @@ const layer = Layer.effect(
           .set({ project_id: projectID })
           .where(and(eq(SessionTable.project_id, ProjectV2.ID.global), eq(SessionTable.directory, data.directory)))
           .run()
-          .pipe(Effect.orDie)
+          .pipe(Database.retryWhenLocked, Effect.orDie)
       }
 
       yield* saveProjectDirectory({

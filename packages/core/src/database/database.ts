@@ -2,7 +2,8 @@ export * as Database from "./database"
 
 import { EffectDrizzleSqlite } from "@opencode-ai/effect-drizzle-sqlite"
 import { layer as sqliteLayer } from "#sqlite"
-import { Context, Effect, Layer } from "effect"
+import { Cause, Context, Effect, Layer, Schedule } from "effect"
+import { isSqlErrorReason } from "effect/unstable/sql/SqlError"
 import { Global } from "../global"
 import { Flag } from "../flag/flag"
 import { isAbsolute, join } from "path"
@@ -19,6 +20,52 @@ const makeDatabase = EffectDrizzleSqlite.makeWithDefaults()
 // upsert dies on SQLITE_BUSY and takes the whole process down with it, so wait
 // generously instead of failing fast.
 const BUSY_TIMEOUT = 30_000
+
+// Waiting out the busy timeout is not always enough, because SQLite's busy
+// handler is not fair: a write can lose the race again as soon as it gives up
+// its place. Writes that would otherwise die get a bounded number of further
+// attempts, spread out so competing processes do not wake together.
+const LOCK_RETRY_WINDOW = 30_000
+
+const lockRetrySchedule = Schedule.exponential(100, 2).pipe(
+  Schedule.either(Schedule.spaced(1_000)),
+  Schedule.jittered,
+  Schedule.while((meta) => meta.elapsed < LOCK_RETRY_WINDOW),
+)
+
+/**
+ * Reports whether a failure is SQLite refusing to write because another
+ * connection holds the lock. The reason sits behind a drizzle query error, a
+ * `Cause`, or a `SqlError`, so walk whatever chain the caller hands over.
+ */
+export function isLocked(error: unknown): boolean {
+  const seen = new Set<object>()
+  const pending: unknown[] = [error]
+  while (pending.length > 0) {
+    const current = pending.pop()
+    if (current === null || typeof current !== "object") continue
+    if (seen.has(current)) continue
+    seen.add(current)
+    if (isSqlErrorReason(current) && current._tag === "LockTimeoutError") return true
+    const code = (current as { code?: unknown }).code
+    if (code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") return true
+    if (Cause.isCause(current)) {
+      pending.push(Cause.squash(current))
+      continue
+    }
+    const cause = (current as { cause?: unknown }).cause
+    if (cause !== undefined) pending.push(cause)
+  }
+  return false
+}
+
+/**
+ * Retries a query for as long as it only fails on a held write lock. Wrap a
+ * write with this before `Effect.orDie`, or lock contention turns into a
+ * defect that takes the whole process down.
+ */
+export const retryWhenLocked = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+  effect.pipe(Effect.retry({ while: isLocked, schedule: lockRetrySchedule }))
 type DatabaseShape = Effect.Success<typeof makeDatabase>
 
 export interface Interface {
