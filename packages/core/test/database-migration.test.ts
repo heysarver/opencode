@@ -4,7 +4,7 @@ import { fileURLToPath } from "url"
 import path from "path"
 import { SqliteClient } from "@effect/sql-sqlite-bun"
 import { EffectDrizzleSqlite } from "@opencode-ai/effect-drizzle-sqlite"
-import { Effect, Layer } from "effect"
+import { Context, Effect, Layer } from "effect"
 import { eq, inArray, sql } from "drizzle-orm"
 import { DatabaseMigration } from "@opencode-ai/core/database/migration"
 import { migrations } from "@opencode-ai/core/database/migration.gen"
@@ -112,6 +112,26 @@ describe("DatabaseMigration", () => {
         { concurrency: "unbounded" },
       ),
     )
+  })
+
+  test("waits for a write lock held by another connection", async () => {
+    await using tmp = await tmpdir()
+    const filename = path.join(tmp.path, "busy.sqlite")
+
+    // Another opencode process can hold the write lock for a while. Every
+    // instance boot writes, and the write dies on SQLITE_BUSY, so the busy
+    // timeout has to be generous rather than fail fast.
+    const timeout = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const context = yield* Layer.build(Database.layerFromPath(filename))
+          const { db } = Context.get(context, Database.Service)
+          return yield* db.get<{ timeout: number }>(sql`PRAGMA busy_timeout`)
+        }),
+      ),
+    )
+
+    expect(timeout?.timeout).toBeGreaterThanOrEqual(30_000)
   })
   if (process.platform === "linux") {
     test("declared schema has no ungenerated migrations", async () => {

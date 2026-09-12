@@ -11,6 +11,14 @@ import { InstallationChannel } from "../installation/version"
 import { makeGlobalNode } from "../effect/app-node"
 
 const makeDatabase = EffectDrizzleSqlite.makeWithDefaults()
+
+// Multiple opencode processes routinely share one database file: one server
+// per editor thread plus any CLI invocation. Every instance boot upserts the
+// project row, and SQLite's busy handler is not fair, so a waiter can starve
+// well past a short timeout while another process keeps writing. The boot
+// upsert dies on SQLITE_BUSY and takes the whole process down with it, so wait
+// generously instead of failing fast.
+const BUSY_TIMEOUT = 30_000
 type DatabaseShape = Effect.Success<typeof makeDatabase>
 
 export interface Interface {
@@ -24,9 +32,9 @@ const layer = Layer.effect(
   Effect.gen(function* () {
     const db = yield* makeDatabase
 
+    yield* db.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT}`)
     yield* db.run("PRAGMA journal_mode = WAL")
     yield* db.run("PRAGMA synchronous = NORMAL")
-    yield* db.run("PRAGMA busy_timeout = 5000")
     yield* db.run("PRAGMA cache_size = -64000")
     yield* db.run("PRAGMA foreign_keys = ON")
     yield* db.run("PRAGMA wal_checkpoint(PASSIVE)")
@@ -37,7 +45,7 @@ const layer = Layer.effect(
 )
 
 export function layerFromPath(filename: string) {
-  return layer.pipe(Layer.provide(sqliteLayer({ filename })))
+  return layer.pipe(Layer.provide(sqliteLayer({ filename, timeout: BUSY_TIMEOUT })))
 }
 
 export function path() {
